@@ -36,7 +36,7 @@ object Main {
         shardResolver = JobStreamRender.shardResolver)
 
       if (port != "2551" && port != "2552")
-        system.actorOf(Props[Bot], "bot")
+        system.actorOf(Props(new JobStreamRouter), "bot")
     }
 
     def startupSharedJournal(system: ActorSystem, startStore: Boolean, path: ActorPath): Unit = {

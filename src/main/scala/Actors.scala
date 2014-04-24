@@ -3,16 +3,16 @@ package sharding.example
 import akka.actor._
 import akka.contrib.pattern.{ClusterSharding, ShardRegion}
 
-import scala.collection.mutable.ListBuffer
 import akka.routing.RoundRobinPool
 import akka.cluster.routing.{ClusterRouterPoolSettings, ClusterRouterPool}
 import akka.persistence.EventsourcedProcessor
+import scala.collection.mutable.ListBuffer
 
 object JobStreamRender {
 
-  case class Subscribe(jobStreamId: Long, mapping: Any)
+  case class Subscribe(jobStreamId: Long, payload: Any)
 
-  case class CounterChanged(delta: Int)
+  private case class Subscriber(ref: ActorRef, payload: Any)
 
   val idExtractor: ShardRegion.IdExtractor = {
     case s: Subscribe  => (s.jobStreamId.toString, s)
@@ -31,55 +31,56 @@ object JobStreamRender {
 class JobStreamRender extends EventsourcedProcessor {
 
   import JobStreamRender._
-  var counter = 0
 
-  val workerRouter = context.actorOf(
+  var subsribers = ListBuffer.empty[ActorRef]
+
+  val renderers = context.actorOf(
     ClusterRouterPool(RoundRobinPool(0), ClusterRouterPoolSettings(
       totalInstances = 100, maxInstancesPerNode = 3,
       allowLocalRoutees = false, useRole = None)).props(Props[ActiveSector]),
-    name = "workerRouter3")
+    name = "renderRouter")
 
-  private def updateState(c: CounterChanged) = counter += c.delta
+  private def updateState(c: Subscriber): Unit = subsribers += c.ref
 
   override def receiveRecover: Receive = {
-    case e: CounterChanged =>
-      println(">>>>>>>>> Recovering from the failure")
-      updateState(e)
+    case e: Subscriber => updateState(e)
   }
 
   def receiveCommand = {
-    case Subscribe(jobStreamId, mapping) =>
-      println(s">>>>>>>>>>>> JobStreamRender: Received message from ${sender} to ${self}, state = ${counter}")
-      persist(CounterChanged(+1))(updateState)
-      if(counter == 10) { throw new RuntimeException("CRASHED!!!!!!!!!!!!!!")}
-      workerRouter ! 'polygon
+    case s@Subscribe(jobStreamId, mapping) =>
+      println(s">>>>>> Processing ${s}")
+      persist(Subscriber(sender, mapping))(updateState)
+      renderers.forward('render)
 
+    case 'Fail => throw new RuntimeException("!!!! CRASHED")
   }
-
 }
 
 class ActiveSector extends Actor {
 
   def receive = {
     case 'polygon =>
-      //println(s">>>>>>>>> ActiveSector: Called from ${sender} to ${self}")
+       sender ! "Here you go..."
   }
 }
 
 
-class Bot extends Actor {
+class JobStreamRouter extends Actor {
   import scala.concurrent.duration._
   import JobStreamRender._
 
-  context.setReceiveTimeout(500.milliseconds)
+  context.setReceiveTimeout(100.milliseconds)
 
   val region = ClusterSharding(context.system).shardRegion(JobStreamRender.shardName)
 
   def receive: Receive = {
+    case s: Subscribe =>
+      region.forward(s)
+
     case ReceiveTimeout =>
-      region ! Subscribe(100, "foo")
-      region ! Subscribe(100, "foo")
-      region ! Subscribe(200, "bar")
+      region ! Subscribe(100, "show me a new car")
+      region ! Subscribe(100, "show me money")
+      region ! Subscribe(200, "surprise me!")
   }
 }
 

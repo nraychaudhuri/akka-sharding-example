@@ -4,7 +4,7 @@ import com.typesafe.sbt.SbtMultiJvm.MultiJvmKeys.MultiJvm
 val akkaVersion = "2.3.0"
 
 val project = Project(
-  id = "jobstream-sharding",
+  id = "akka-sharding-example",
   base = file("."),
   settings = Project.defaultSettings ++ SbtMultiJvm.multiJvmSettings ++ Seq(
     name := "jobstream-sharding",

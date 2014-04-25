@@ -5,62 +5,102 @@ import akka.contrib.pattern.{ClusterSharding, ShardRegion}
 
 import akka.routing.RoundRobinPool
 import akka.cluster.routing.{ClusterRouterPoolSettings, ClusterRouterPool}
-import akka.persistence.EventsourcedProcessor
+import akka.persistence.{SnapshotOffer, EventsourcedProcessor}
 import scala.collection.mutable.ListBuffer
+import scala.collection.mutable
 
 object JobStreamRender {
 
   case class Subscribe(jobStreamId: Long, payload: Any)
-
-  private case class Subscriber(ref: ActorRef, payload: Any)
+  case class Init(jobStreamId: Long)
 
   val idExtractor: ShardRegion.IdExtractor = {
     case s: Subscribe  => (s.jobStreamId.toString, s)
+    case s: Init => (s.jobStreamId.toString, s)
   }
 
   val shardResolver: ShardRegion.ShardResolver = msg => msg match {
     case s: Subscribe  => (s.jobStreamId % 100).toString
+    case s: Init  => (s.jobStreamId % 100).toString
   }
 
   val shardName: String = "JobStreamRender"
-
   def props(): Props = Props[JobStreamRender]
+
+  private case class AddSubscriber(ref: ActorRef)
+  private case class RemoveSubscriber(ref: ActorRef)
+  private case object SnapshotTick
+
 }
 
 
-class JobStreamRender extends EventsourcedProcessor {
+//Using Akka event sourcing
+class JobStreamRender extends EventsourcedProcessor with ActorLogging {
 
   import JobStreamRender._
+  import scala.concurrent.duration._
+  import context.dispatcher
+  //Starting a schedule ticks to take snapshot of the internal state
+  context.system.scheduler.schedule(100.milliseconds, 2.minutes, self, SnapshotTick)
 
-  var subsribers = ListBuffer.empty[ActorRef]
-
+  var subscribers: mutable.Buffer[ActorRef] = ListBuffer.empty[ActorRef]
   val renderers = context.actorOf(
     ClusterRouterPool(RoundRobinPool(0), ClusterRouterPoolSettings(
       totalInstances = 100, maxInstancesPerNode = 3,
       allowLocalRoutees = false, useRole = None)).props(Props[ActiveSector]),
     name = "renderRouter")
 
-  private def updateState(c: Subscriber): Unit = subsribers += c.ref
-
+  //Since now we have saving the snapshots, Akka persistence will replay the snapshots and any subscriber messages that are
+  //younger than the last snapshot
   override def receiveRecover: Receive = {
-    case e: Subscriber => updateState(e)
+    case e: AddSubscriber => addSubscriberAndWatch(e)
+    case SnapshotOffer(metadata, subs) =>
+      subs.asInstanceOf[List[ActorRef]].foreach(ref => addSubscriberAndWatch(AddSubscriber(ref)))
   }
 
-  def receiveCommand = {
-    case s@Subscribe(jobStreamId, mapping) =>
-      println(s">>>>>> Processing ${s}")
-      persist(Subscriber(sender, mapping))(updateState)
-      renderers.forward('render)
+  override def receiveCommand = {
 
-    case 'Fail => throw new RuntimeException("!!!! CRASHED")
+    case Init(jobStreamId) =>
+      println(s"Starting the job stream render ${jobStreamId}")
+    case s@Subscribe(jobStreamId, mapping) =>
+      log.debug(s">>>>>> Processing ${s}")
+      persist(AddSubscriber(sender))(addSubscriberAndWatch)
+      renderers.forward(ActiveSector.Draw(jobStreamId))
+
+    case Terminated(ref) =>
+      persist(RemoveSubscriber(ref))(removeSubscriber)
+
+    case 'Fail =>
+      //used to simulate actor crashes
+      throw new RuntimeException("!!!! CRASHED")
+
+    case SnapshotTick =>
+      //saving the current snapshot of the subscribers. Since the save happens asynchronously we need to make sure
+      //we use immutable data
+      saveSnapshot(subscribers.toList)
+  }
+
+  private def addSubscriberAndWatch(c: AddSubscriber): Unit = {
+    subscribers += c.ref
+    context.watch(c.ref)
+  }
+
+  private def removeSubscriber(c: RemoveSubscriber): Unit = {
+    subscribers -= c.ref
   }
 }
 
+object ActiveSector {
+
+  case class Draw(jobStreamId: Long)
+}
+
 class ActiveSector extends Actor {
+  import ActiveSector._
 
   def receive = {
-    case 'polygon =>
-       sender ! "Here you go..."
+    case Draw(jobStreamId) =>
+       sender ! s"Here you go...${jobStreamId}"
   }
 }
 

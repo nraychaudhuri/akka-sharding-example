@@ -16,10 +16,10 @@ import scala.concurrent.duration._
 
 
 object JobStreamRenderConfig extends MultiNodeConfig {
-   val persistenceStoreNode = role("db")
-   val node1 = role("node1")
+   val node1 = role("node1") //will use it for db and test conductor
    val node2 = role("node2")
    val node3 = role("node3")
+   val node4 = role("node4")
 
    commonConfig(ConfigFactory.parseString("""
      akka.actor.provider = "akka.cluster.ClusterActorRefProvider"
@@ -35,10 +35,10 @@ object JobStreamRenderConfig extends MultiNodeConfig {
 
 }
 
-class JobStreamRenderSpecMultiJvmNode0 extends JobStreamRenderSpec
 class JobStreamRenderSpecMultiJvmNode1 extends JobStreamRenderSpec
 class JobStreamRenderSpecMultiJvmNode2 extends JobStreamRenderSpec
 class JobStreamRenderSpecMultiJvmNode3 extends JobStreamRenderSpec
+class JobStreamRenderSpecMultiJvmNode4 extends JobStreamRenderSpec
 
 
 class JobStreamRenderSpec extends MultiNodeSpec(JobStreamRenderConfig)
@@ -60,13 +60,13 @@ class JobStreamRenderSpec extends MultiNodeSpec(JobStreamRenderConfig)
 
   //setting up the persistence store
   override protected def atStartup() {
-    runOn(persistenceStoreNode) {
+    runOn(node1) {
       storageLocations.foreach(dir => FileUtils.deleteDirectory(dir))
     }
   }
 
   override protected def afterTermination() {
-    runOn(persistenceStoreNode) {
+    runOn(node1) {
       storageLocations.foreach(dir => FileUtils.deleteDirectory(dir))
     }
   }
@@ -76,14 +76,14 @@ class JobStreamRenderSpec extends MultiNodeSpec(JobStreamRenderConfig)
 
     "startup the shared journal for the jobstream" in {
 
-      runOn(persistenceStoreNode) {
+      runOn(node1) {
         system.actorOf(Props[SharedLeveldbStore], "store")
       }
       enterBarrier("persistence-actor-started")
 
       //now setup the nodes that is going to use this journal actor for persisting messages
       runOn(node1, node2) {
-        val ref1 = node(persistenceStoreNode) / "user" / "store"
+        val ref1 = node(node1) / "user" / "store"
         system.actorSelection(ref1) ! Identify(None)
         val sharedStore = expectMsgType[ActorIdentity].ref.get
         SharedLeveldbJournal.setStore(sharedStore, system)
@@ -95,17 +95,18 @@ class JobStreamRenderSpec extends MultiNodeSpec(JobStreamRenderConfig)
        join(node1, node1)
        join(node2, node1)
        join(node3, node1)
+       join(node4, node1)
        enterBarrier("sharding started")
     }
 
-    "Run job stream render on node1 and subscribe from node3 " in within(15.seconds) {
-      runOn(node1) {
+    "Run job stream render on node2 and subscribe from node4 " in within(15.seconds) {
+      runOn(node2) {
         val region = ClusterSharding(system).shardRegion(JobStreamRender.shardName)
         region ! Init(100L)
       }
-      enterBarrier("node1-jobstream-started")
+      enterBarrier("node2-jobstream-started")
 
-      runOn(node3) {
+      runOn(node4) {
         val region = ClusterSharding(system).shardRegion(JobStreamRender.shardName)
         awaitAssert {
           within(1.second) {
@@ -114,17 +115,17 @@ class JobStreamRenderSpec extends MultiNodeSpec(JobStreamRenderConfig)
           }
         }
       }
-      enterBarrier("node3-subscribed-to-node1")
+      enterBarrier("node4-subscribed-to-node2")
     }
 
-    "Run job stream render on node2 and subscribe from node3 " in within(15.seconds) {
-      runOn(node2) {
+    "Run job stream render on node3 and subscribe from node4 " in within(15.seconds) {
+      runOn(node3) {
         val region = ClusterSharding(system).shardRegion(JobStreamRender.shardName)
         region ! Init(200L)
       }
-      enterBarrier("node2-jobstream-started")
+      enterBarrier("node3-jobstream-started")
 
-      runOn(node3) {
+      runOn(node4) {
         val region = ClusterSharding(system).shardRegion(JobStreamRender.shardName)
         awaitAssert {
           within(1.second) {
@@ -133,26 +134,26 @@ class JobStreamRenderSpec extends MultiNodeSpec(JobStreamRenderConfig)
           }
         }
       }
-      enterBarrier("node3-subscribed-to-node2")
+      enterBarrier("node4-subscribed-to-node3")
     }
-//
-//    "job stream render should survive node crashes" in within(15.seconds) {
-//      runOn(persistenceStoreNode) {
-//        testConductor.shutdown(node1).await
-//      }
-//      enterBarrier("node1-is-down")
-//
-//      runOn(node3) {
-//        val region = ClusterSharding(system).shardRegion(JobStreamRender.shardName)
-//        awaitAssert {
-//          within(2.second) {
-//            region ! Subscribe(100, "hey")
-//            expectMsg("Here you go...100")
-//          }
-//        }
-//      }
-//      enterBarrier("jobstream-100-now-running-on-other-node")
-//    }
+
+    "job stream render should survive node crashes" in within(15.seconds) {
+      runOn(node1) {  //testconductor runs on node1
+        testConductor.exit(node2, 0).await
+      }
+      enterBarrier("node2-is-down")
+
+      runOn(node3) {
+        val region = ClusterSharding(system).shardRegion(JobStreamRender.shardName)
+        awaitAssert {
+          within(2.second) {
+            region ! Subscribe(100, "hey")
+            expectMsg("Here you go...100")
+          }
+        }
+      }
+      enterBarrier("jobstream-100-now-running-on-other-node")
+    }
   }
 
   def join(from: RoleName, to: RoleName): Unit = {

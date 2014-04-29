@@ -12,15 +12,17 @@ import scala.collection.mutable
 object JobStreamRender {
 
   sealed trait BaseMessage { val jobStreamId: Long }
+
   case class Subscribe(jobStreamId: Long, payload: Any) extends BaseMessage
   case class Init(jobStreamId: Long) extends BaseMessage
+  case class SubscriberCount(jobStreamId: Long) extends BaseMessage
 
   val idExtractor: ShardRegion.IdExtractor = {
     case s: BaseMessage => (s.jobStreamId.toString, s)
   }
 
   val shardResolver: ShardRegion.ShardResolver = msg => msg match {
-    case s: BaseMessage  => (s.jobStreamId % 100).toString
+    case s: BaseMessage  => (s.jobStreamId % 10).toString
   }
 
   val shardName: String = "JobStreamRender"
@@ -40,7 +42,7 @@ class JobStreamRender extends EventsourcedProcessor with ActorLogging {
   import scala.concurrent.duration._
   import context.dispatcher
   //Starting a schedule ticks to take snapshot of the internal state
-  context.system.scheduler.schedule(100.milliseconds, 2.minutes, self, SnapshotTick)
+  //context.system.scheduler.schedule(100.milliseconds, 2.minutes, self, SnapshotTick)
 
   var subscribers: mutable.Buffer[ActorRef] = ListBuffer.empty[ActorRef]
   val renderers = context.actorOf(
@@ -52,7 +54,8 @@ class JobStreamRender extends EventsourcedProcessor with ActorLogging {
   //Since now we have saving the snapshots, Akka persistence will replay the snapshots and any subscriber messages that are
   //younger than the last snapshot
   override def receiveRecover: Receive = {
-    case e: AddSubscriber => addSubscriberAndWatch(e)
+    case e: AddSubscriber =>
+      addSubscriberAndWatch(e)
     case SnapshotOffer(metadata, subs) =>
       subs.asInstanceOf[List[ActorRef]].foreach(ref => addSubscriberAndWatch(AddSubscriber(ref)))
   }
@@ -61,10 +64,13 @@ class JobStreamRender extends EventsourcedProcessor with ActorLogging {
 
     case Init(jobStreamId) =>
       println(s"Starting the job stream render ${jobStreamId}")
+
     case s@Subscribe(jobStreamId, mapping) =>
-      log.debug(s">>>>>> Processing ${s}")
       persist(AddSubscriber(sender))(addSubscriberAndWatch)
       renderers.forward(ActiveSector.Draw(jobStreamId))
+
+    case SubscriberCount(jobStreamId) =>
+      sender ! subscribers.size
 
     case Terminated(ref) =>
       persist(RemoveSubscriber(ref))(removeSubscriber)

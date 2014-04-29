@@ -11,7 +11,7 @@ import akka.remote.testconductor.RoleName
 import akka.cluster.Cluster
 import akka.contrib.pattern.ClusterSharding
 import akka.testkit.ImplicitSender
-import sharding.example.JobStreamRender.{Subscribe, Init}
+import sharding.example.JobStreamRender.{SubscriberCount, Subscribe, Init}
 import scala.concurrent.duration._
 
 
@@ -74,7 +74,7 @@ class JobStreamRenderSpec extends MultiNodeSpec(JobStreamRenderConfig)
 
   "JobStream render app" must {
 
-    "startup the shared journal for the jobstream" in {
+    "startup the shared journal for the jobstream" in within(15.seconds) {
 
       runOn(node1) {
         system.actorOf(Props[SharedLeveldbStore], "store")
@@ -82,7 +82,7 @@ class JobStreamRenderSpec extends MultiNodeSpec(JobStreamRenderConfig)
       enterBarrier("persistence-actor-started")
 
       //now setup the nodes that is going to use this journal actor for persisting messages
-      runOn(node1, node2) {
+      runOn(node1, node2, node3, node4) {
         val ref1 = node(node1) / "user" / "store"
         system.actorSelection(ref1) ! Identify(None)
         val sharedStore = expectMsgType[ActorIdentity].ref.get
@@ -108,12 +108,8 @@ class JobStreamRenderSpec extends MultiNodeSpec(JobStreamRenderConfig)
 
       runOn(node4) {
         val region = ClusterSharding(system).shardRegion(JobStreamRender.shardName)
-        awaitAssert {
-          within(1.second) {
-            region ! Subscribe(100, "hey")
-            expectMsg("Here you go...100")
-          }
-        }
+        region ! Subscribe(100L, "hey")
+        expectMsg("Here you go...100")
       }
       enterBarrier("node4-subscribed-to-node2")
     }
@@ -127,12 +123,8 @@ class JobStreamRenderSpec extends MultiNodeSpec(JobStreamRenderConfig)
 
       runOn(node4) {
         val region = ClusterSharding(system).shardRegion(JobStreamRender.shardName)
-        awaitAssert {
-          within(1.second) {
-            region ! Subscribe(200, "hey")
-            expectMsg("Here you go...200")
-          }
-        }
+        region ! Subscribe(200L, "hey")
+        expectMsg("Here you go...200")
       }
       enterBarrier("node4-subscribed-to-node3")
     }
@@ -147,12 +139,25 @@ class JobStreamRenderSpec extends MultiNodeSpec(JobStreamRenderConfig)
         val region = ClusterSharding(system).shardRegion(JobStreamRender.shardName)
         awaitAssert {
           within(2.second) {
-            region ! Subscribe(100, "hey")
-            expectMsg("Here you go...100")
+            region ! Subscribe(200L, "hey")
+            expectMsg("Here you go...200")
           }
         }
       }
-      enterBarrier("jobstream-100-now-running-on-other-node")
+      enterBarrier("jobstream-200-now-running-on-other-node")
+    }
+
+    "job stream recovers using persistence storage" in within(15.seconds) {
+      runOn(node4) {
+        val region = ClusterSharding(system).shardRegion(JobStreamRender.shardName)
+        awaitAssert {
+          within(2.second) {
+            region ! SubscriberCount(100L)
+            expectMsg(1)
+          }
+        }
+      }
+      enterBarrier("jobstream-100-is-recovered-using-persistence-storage")
     }
   }
 

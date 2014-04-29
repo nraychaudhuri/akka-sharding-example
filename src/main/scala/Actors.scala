@@ -11,17 +11,16 @@ import scala.collection.mutable
 
 object JobStreamRender {
 
-  case class Subscribe(jobStreamId: Long, payload: Any)
-  case class Init(jobStreamId: Long)
+  sealed trait BaseMessage { val jobStreamId: Long }
+  case class Subscribe(jobStreamId: Long, payload: Any) extends BaseMessage
+  case class Init(jobStreamId: Long) extends BaseMessage
 
   val idExtractor: ShardRegion.IdExtractor = {
-    case s: Subscribe  => (s.jobStreamId.toString, s)
-    case s: Init => (s.jobStreamId.toString, s)
+    case s: BaseMessage => (s.jobStreamId.toString, s)
   }
 
   val shardResolver: ShardRegion.ShardResolver = msg => msg match {
-    case s: Subscribe  => (s.jobStreamId % 100).toString
-    case s: Init  => (s.jobStreamId % 100).toString
+    case s: BaseMessage  => (s.jobStreamId % 100).toString
   }
 
   val shardName: String = "JobStreamRender"

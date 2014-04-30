@@ -13,6 +13,7 @@ import akka.contrib.pattern.ClusterSharding
 import akka.testkit.ImplicitSender
 import sharding.example.JobStreamRender.{SubscriberCount, Subscribe, Init}
 import scala.concurrent.duration._
+import scala.concurrent.Await
 
 
 object JobStreamRenderConfig extends MultiNodeConfig {
@@ -29,6 +30,9 @@ object JobStreamRenderConfig extends MultiNodeConfig {
        dir = "target/test-shared-journal"
      }
      akka.persistence.snapshot-store.local.dir = "target/test-snapshots"
+     akka.cluster.auto-down-unreachable-after=5s
+     akka.loglevel = INFO
+
    """))
 
   testTransport(true)
@@ -129,16 +133,19 @@ class JobStreamRenderSpec extends MultiNodeSpec(JobStreamRenderConfig)
       enterBarrier("node4-subscribed-to-node3")
     }
 
-    "job stream render should survive node crashes" in within(15.seconds) {
-      runOn(node1) {  //testconductor runs on node1
+    "crash the job stream running on node2" in {
+      runOn(node1) {
+        //testconductor runs on node1
         testConductor.exit(node2, 0).await
       }
       enterBarrier("node2-is-down")
+    }
 
+    "access the crashed job stream from other node" in within(15.seconds) {
       runOn(node3) {
         val region = ClusterSharding(system).shardRegion(JobStreamRender.shardName)
         awaitAssert {
-          within(2.second) {
+          within(2.seconds) {
             region ! Subscribe(200L, "hey")
             expectMsg("Here you go...200")
           }

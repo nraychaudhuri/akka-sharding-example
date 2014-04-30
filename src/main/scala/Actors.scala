@@ -22,7 +22,7 @@ object JobStreamRender {
   }
 
   val shardResolver: ShardRegion.ShardResolver = msg => msg match {
-    case s: BaseMessage  => (s.jobStreamId % 10).toString
+    case s: BaseMessage  => (s.jobStreamId % 1000).toString
   }
 
   val shardName: String = "JobStreamRender"
@@ -66,6 +66,7 @@ class JobStreamRender extends EventsourcedProcessor with ActorLogging {
       println(s"Starting the job stream render ${jobStreamId}")
 
     case s@Subscribe(jobStreamId, mapping) =>
+      println(s"!!!!!!!!!!!!!!!!!!!! Processing ${s}")
       persist(AddSubscriber(sender))(addSubscriberAndWatch)
       renderers.forward(ActiveSector.Draw(jobStreamId))
 
